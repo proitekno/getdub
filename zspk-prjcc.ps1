@@ -5,4 +5,4 @@
     'src\fs\mod.rs','src\fs\media.rs','src\fs\ntfs.rs','src\fs\generic.rs',
     'run_tests.ps1','install-src.ps1','build-src.ps1','zspk.ps1','uzspk.ps1',
     'zspk-prj.ps1','zspk-prjcc.ps1'
-) -comp -crc -o .\gdubv0-0-50fcc.zspk
+) -comp -crc -o .\spk\gdubv0-0-51fcc.zspk

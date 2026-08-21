@@ -1,6 +1,6 @@
 [package]
 name = "getdub"
-version = "0.0.50"
+version = "0.0.51"
 edition = "2021"
 description = "Fast duplicate file finder with persistent index"
 
