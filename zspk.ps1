@@ -1,35 +1,30 @@
 <#
 .SYNOPSIS
     Упаковывает один или несколько файлов в .zspk пакет.
-.PARAMETER InputFiles
+.PARAMETER if
     Массив путей к файлам для упаковки.
-.PARAMETER OutputFile
+.PARAMETER o
     Путь к выходному .zspk файлу.
-.PARAMETER Compress
+.PARAMETER comp
     Если указан, применяет Deflate-сжатие.
-.PARAMETER Crc32
+.PARAMETER crc
     Если указан, вычисляет и добавляет CRC32.
-.EXAMPLE
-    .\zspk.ps1 -InputFiles @('src\idxer.rs') -OutputFile .\fix.zspk
-.EXAMPLE
-    .\zspk.ps1 -InputFiles (Get-ChildItem -Recurse -Include *.rs,*.toml,*.ps1,*.md) -OutputFile .\gdubv0-0-49f.zspk
 #>
 param(
     [Parameter(Mandatory=$true)]
-    [string[]]$InputFiles,
+    [string[]]$if,
     
     [Parameter(Mandatory=$true)]
-    [string]$OutputFile,
+    [string]$o,
     
-    [switch]$Compress,
-    [switch]$Crc32
+    [switch]$comp,
+    [switch]$crc
 )
 
 $ErrorActionPreference = 'Stop'
 
-# Преобразуем OutputFile в абсолютный путь
-$OutputFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputFile)
-Write-Host "Выходной файл: $OutputFile" -ForegroundColor Cyan
+$o = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($o)
+Write-Host "Выходной файл: $o" -ForegroundColor Cyan
 
 function Get-CRC32 {
     param([byte[]]$Bytes)
@@ -60,13 +55,12 @@ function Encode-Data {
 
 $lines = @()
 $lines += "# ZSPK v3.0"
-$lines += "# COMPRESS: $($Compress.IsPresent)"
-$lines += "# CRC32: $($Crc32.IsPresent)"
-$lines += "# FILES: $($InputFiles.Count)"
+$lines += "# COMPRESS: $($comp.IsPresent)"
+$lines += "# CRC32: $($crc.IsPresent)"
+$lines += "# FILES: $($if.Count)"
 
-if ($InputFiles.Count -eq 1) {
-    # Одиночный файл
-    $file = $InputFiles[0]
+if ($if.Count -eq 1) {
+    $file = $if[0]
     $fileAbs = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($file)
     
     if (-not (Test-Path $fileAbs)) {
@@ -75,28 +69,27 @@ if ($InputFiles.Count -eq 1) {
     }
     
     $bytes = [System.IO.File]::ReadAllBytes($fileAbs)
-    $fileName = $fileAbs.Replace((Get-Location).Path + "\", "").Replace("\", "/")
+    $fileName = (Get-Item $fileAbs).Name
     
     Write-Host "Упаковка файла: $fileName ($($bytes.Length) байт)" -ForegroundColor Cyan
     
     $lines += "# FILE: $fileName"
     $lines += "# SIZE: $($bytes.Length)"
-    if ($Crc32) {
+    if ($crc) {
         $lines += "# HASH: $(Get-CRC32 $bytes)"
     }
     $lines += "BEGIN_BASE64"
-    $encoded = Encode-Data $bytes -DoCompress:$Compress
+    $encoded = Encode-Data $bytes -DoCompress:$comp
     $lines += [Convert]::ToBase64String($encoded)
     $lines += "END_BASE64"
 }
 else {
-    # Мульти-пакет
-    Write-Host "Упаковка $($InputFiles.Count) файлов в мульти-пакет..." -ForegroundColor Cyan
+    Write-Host "Упаковка $($if.Count) файлов в мульти-пакет..." -ForegroundColor Cyan
     
     $lines += "BEGIN_MULTI"
     $packedCount = 0
     
-    foreach ($file in $InputFiles) {
+    foreach ($file in $if) {
         $fileAbs = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($file)
         
         if (-not (Test-Path $fileAbs)) {
@@ -105,17 +98,17 @@ else {
         }
         
         $bytes = [System.IO.File]::ReadAllBytes($fileAbs)
-        $fileName = $fileAbs.Replace((Get-Location).Path + "\", "").Replace("\", "/")
+        $fileName = (Get-Item $fileAbs).Name
         
         Write-Host "  [OK] $fileName ($($bytes.Length) байт)" -ForegroundColor Green
         
         $lines += "BEGIN_FILE: $fileName"
         $lines += "# SIZE: $($bytes.Length)"
-        if ($Crc32) {
+        if ($crc) {
             $lines += "# HASH: $(Get-CRC32 $bytes)"
         }
         $lines += "BEGIN_BASE64"
-        $encoded = Encode-Data $bytes -DoCompress:$Compress
+        $encoded = Encode-Data $bytes -DoCompress:$comp
         $lines += [Convert]::ToBase64String($encoded)
         $lines += "END_BASE64"
         $packedCount++
@@ -128,18 +121,18 @@ else {
 $content = $lines -join "`r`n"
 
 try {
-    [System.IO.File]::WriteAllText($OutputFile, $content, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($o, $content, [System.Text.Encoding]::UTF8)
     
-    if (Test-Path $OutputFile) {
-        $fileInfo = Get-Item $OutputFile
-        Write-Host "`nУСПЕХ: Файл создан: $OutputFile" -ForegroundColor Green
+    if (Test-Path $o) {
+        $fileInfo = Get-Item $o
+        Write-Host "`nУСПЕХ: Файл создан: $o" -ForegroundColor Green
         Write-Host "  Размер: $($fileInfo.Length) байт" -ForegroundColor Cyan
     } else {
-        Write-Host "`nОШИБКА: Файл не был создан по пути: $OutputFile" -ForegroundColor Red
+        Write-Host "`nОШИБКА: Файл не был создан по пути: $o" -ForegroundColor Red
         exit 1
     }
 } catch {
     Write-Host "`nОШИБКА при записи файла: $_" -ForegroundColor Red
-    Write-Host "Путь: $OutputFile" -ForegroundColor Red
+    Write-Host "Путь: $o" -ForegroundColor Red
     exit 1
 }

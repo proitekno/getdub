@@ -1,32 +1,32 @@
 <#
 .SYNOPSIS
     Распаковывает .zspk пакет (одиночный или мульти-файл).
-.PARAMETER InputFile
+.PARAMETER if
     Путь к .zspk файлу.
-.PARAMETER BasePath
+.PARAMETER o
     Базовый путь для распаковки (по умолчанию текущая директория).
 .EXAMPLE
-    .\uzspk.ps1 -InputFile .\gdubv0-0-49f.zspk
+    .\uzspk.ps1 -if .\gdubv0-0-50f.zspk
 #>
 param(
     [Parameter(Mandatory=$true)]
-    [string]$InputFile,
+    [string]$if,
     
-    [string]$BasePath = (Get-Location).Path
+    [string]$o = (Get-Location).Path
 )
 
 $ErrorActionPreference = 'Stop'
 
-$InputFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InputFile)
-$BasePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BasePath)
+$if = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($if)
+$o = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($o)
 
-if (-not (Test-Path $InputFile)) {
-    Write-Host "ОШИБКА: Файл не найден: $InputFile" -ForegroundColor Red
+if (-not (Test-Path $if)) {
+    Write-Host "ОШИБКА: Файл не найден: $if" -ForegroundColor Red
     exit 1
 }
 
-Write-Host "Входной файл: $InputFile" -ForegroundColor Cyan
-Write-Host "Базовый путь: $BasePath" -ForegroundColor Cyan
+Write-Host "Входной файл: $if" -ForegroundColor Cyan
+Write-Host "Базовый путь: $o" -ForegroundColor Cyan
 
 function Get-CRC32 {
     param([byte[]]$Bytes)
@@ -57,37 +57,40 @@ function Decode-Data {
     return $Bytes
 }
 
-$content = Get-Content -Path $InputFile -Raw -Encoding UTF8
+$lines = Get-Content -Path $if -Encoding UTF8
 
 $doCompress = $false
 $doCrc32 = $false
-if ($content -match '(?m)^#\s*COMPRESS:\s*(True|False)\s*$') { $doCompress = ($matches[1] -eq 'True') }
-if ($content -match '(?m)^#\s*CRC32:\s*(True|False)\s*$') { $doCrc32 = ($matches[1] -eq 'True') }
+foreach ($line in $lines) {
+    if ($line -match '^#\s*COMPRESS:\s*(True|False)') { $doCompress = ($matches[1] -eq 'True') }
+    if ($line -match '^#\s*CRC32:\s*(True|False)') { $doCrc32 = ($matches[1] -eq 'True') }
+}
 
 Write-Host "Параметры пакета: Compress=$doCompress, Crc32=$doCrc32" -ForegroundColor Cyan
 
 function Write-FileFromBase64 {
     param(
         [string]$FileName,
-        [string]$Base64Data,
+        [string[]]$Base64Lines,
         [string]$ExpectedHash,
         [bool]$IsCompressed
     )
     
     try {
-        $compressedBytes = [Convert]::FromBase64String($Base64Data.Trim())
+        $base64String = $Base64Lines -join ""
+        $compressedBytes = [Convert]::FromBase64String($base64String)
         $bytes = Decode-Data $compressedBytes -DoCompress:$IsCompressed
         
         if ($doCrc32 -and $ExpectedHash) {
             $actualHash = Get-CRC32 $bytes
             if ($actualHash -ne $ExpectedHash) {
-                Write-Host "  ОШИБКА CRC32 для $FileName: ожидалось $ExpectedHash, получено $actualHash" -ForegroundColor Red
+                Write-Host "  ОШИБКА CRC32 для $FileName : ожидалось $ExpectedHash, получено $actualHash" -ForegroundColor Red
                 return $false
             }
             Write-Host "  CRC32 OK: $actualHash" -ForegroundColor DarkGray
         }
         
-        $fullPath = Join-Path $BasePath $FileName
+        $fullPath = Join-Path $o $FileName
         $outDir = Split-Path $fullPath -Parent
         if ($outDir -and -not (Test-Path $outDir)) {
             New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -103,42 +106,68 @@ function Write-FileFromBase64 {
 }
 
 $extracted = 0
+$state = "HEADER"
+$currentFileName = ""
+$currentHash = ""
+$base64Buffer = @()
 
-if ($content -match 'BEGIN_MULTI') {
-    Write-Host "Распаковка мульти-пакета..." -ForegroundColor Cyan
+foreach ($line in $lines) {
+    $line = $line.Trim()
     
-    $fileBlocks = [regex]::Matches($content, '(?s)BEGIN_FILE:\s*(.+?)\r?\n((?:#\s*.+\r?\n)*)BEGIN_BASE64\r?\n(.+?)\r?\nEND_BASE64')
-    
-    foreach ($match in $fileBlocks) {
-        $fileName = $match.Groups[1].Value.Trim()
-        $metadata = $match.Groups[2].Value
-        $base64Data = $match.Groups[3].Value
-        
-        $expectedHash = ""
-        if ($metadata -match '#\s*HASH:\s*([A-Fa-f0-9]+)') {
-            $expectedHash = $matches[1]
+    switch ($state) {
+        "HEADER" {
+            if ($line -eq "BEGIN_MULTI") {
+                $state = "MULTI"
+            }
+            elseif ($line -eq "BEGIN_BASE64") {
+                $state = "SINGLE_BASE64"
+                $base64Buffer = @()
+            }
+            elseif ($line -match '^#\s*FILE:\s*(.+)$') {
+                $currentFileName = $matches[1].Trim()
+            }
+            elseif ($line -match '^#\s*HASH:\s*([A-Fa-f0-9]+)') {
+                $currentHash = $matches[1]
+            }
         }
-        
-        if (Write-FileFromBase64 $fileName $base64Data $expectedHash $doCompress) {
-            $extracted++
+        "MULTI" {
+            if ($line -match '^BEGIN_FILE:\s*(.+)$') {
+                $currentFileName = $matches[1].Trim()
+                $currentHash = ""
+                $state = "FILE_META"
+            }
+            elseif ($line -eq "END_MULTI") {
+                $state = "DONE"
+            }
         }
-    }
-}
-else {
-    $fileName = ""
-    if ($content -match '(?m)^#\s*FILE:\s*(.+?)\s*$') {
-        $fileName = $matches[1].Trim()
-    }
-    
-    $expectedHash = ""
-    if ($content -match '(?m)^#\s*HASH:\s*([A-Fa-f0-9]+)\s*$') {
-        $expectedHash = $matches[1]
-    }
-    
-    if ($content -match '(?s)BEGIN_BASE64\r?\n(.+?)\r?\nEND_BASE64') {
-        $base64Data = $matches[1]
-        if (Write-FileFromBase64 $fileName $base64Data $expectedHash $doCompress) {
-            $extracted++
+        "FILE_META" {
+            if ($line -match '^#\s*HASH:\s*([A-Fa-f0-9]+)') {
+                $currentHash = $matches[1]
+            }
+            elseif ($line -eq "BEGIN_BASE64") {
+                $base64Buffer = @()
+                $state = "FILE_BASE64"
+            }
+        }
+        "FILE_BASE64" {
+            if ($line -eq "END_BASE64") {
+                if (Write-FileFromBase64 $currentFileName $base64Buffer $currentHash $doCompress) {
+                    $extracted++
+                }
+                $state = "MULTI"
+            } else {
+                $base64Buffer += $line
+            }
+        }
+        "SINGLE_BASE64" {
+            if ($line -eq "END_BASE64") {
+                if (Write-FileFromBase64 $currentFileName $base64Buffer $currentHash $doCompress) {
+                    $extracted++
+                }
+                $state = "DONE"
+            } else {
+                $base64Buffer += $line
+            }
         }
     }
 }
