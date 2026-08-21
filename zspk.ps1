@@ -1,9 +1,6 @@
 <#
 .SYNOPSIS
     Упаковывает один или несколько файлов в .zspk пакет.
-.DESCRIPTION
-    Поддерживает одиночные файлы и мульти-пакеты.
-    Сжатие и CRC32 опциональны (по умолчанию выключены для максимальной совместимости).
 .PARAMETER InputFiles
     Массив путей к файлам для упаковки.
 .PARAMETER OutputFile
@@ -14,8 +11,6 @@
     Если указан, вычисляет и добавляет CRC32.
 .EXAMPLE
     .\zspk.ps1 -InputFiles @('src\idxer.rs') -OutputFile .\fix.zspk
-.EXAMPLE
-    .\zspk.ps1 -InputFiles @('Cargo.toml','src\config.rs','src\main.rs') -OutputFile .\gdubv0-0-49f.zspk
 .EXAMPLE
     .\zspk.ps1 -InputFiles (Get-ChildItem -Recurse -Include *.rs,*.toml,*.ps1,*.md) -OutputFile .\gdubv0-0-49f.zspk
 #>
@@ -31,6 +26,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Преобразуем OutputFile в абсолютный путь
+$OutputFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputFile)
+Write-Host "Выходной файл: $OutputFile" -ForegroundColor Cyan
 
 function Get-CRC32 {
     param([byte[]]$Bytes)
@@ -68,12 +67,17 @@ $lines += "# FILES: $($InputFiles.Count)"
 if ($InputFiles.Count -eq 1) {
     # Одиночный файл
     $file = $InputFiles[0]
-    if (-not (Test-Path $file)) {
-        Write-Host "Ошибка: Файл не найден: $file" -ForegroundColor Red
+    $fileAbs = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($file)
+    
+    if (-not (Test-Path $fileAbs)) {
+        Write-Host "ОШИБКА: Файл не найден: $fileAbs" -ForegroundColor Red
         exit 1
     }
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $file).Path)
-    $fileName = (Resolve-Path $file).Path.Replace((Get-Location).Path + "\", "").Replace("\", "/")
+    
+    $bytes = [System.IO.File]::ReadAllBytes($fileAbs)
+    $fileName = $fileAbs.Replace((Get-Location).Path + "\", "").Replace("\", "/")
+    
+    Write-Host "Упаковка файла: $fileName ($($bytes.Length) байт)" -ForegroundColor Cyan
     
     $lines += "# FILE: $fileName"
     $lines += "# SIZE: $($bytes.Length)"
@@ -87,14 +91,23 @@ if ($InputFiles.Count -eq 1) {
 }
 else {
     # Мульти-пакет
+    Write-Host "Упаковка $($InputFiles.Count) файлов в мульти-пакет..." -ForegroundColor Cyan
+    
     $lines += "BEGIN_MULTI"
+    $packedCount = 0
+    
     foreach ($file in $InputFiles) {
-        if (-not (Test-Path $file)) {
-            Write-Host "Предупреждение: Файл не найден, пропускается: $file" -ForegroundColor Yellow
+        $fileAbs = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($file)
+        
+        if (-not (Test-Path $fileAbs)) {
+            Write-Host "  ПРЕДУПРЕЖДЕНИЕ: Файл не найден, пропускается: $fileAbs" -ForegroundColor Yellow
             continue
         }
-        $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $file).Path)
-        $fileName = (Resolve-Path $file).Path.Replace((Get-Location).Path + "\", "").Replace("\", "/")
+        
+        $bytes = [System.IO.File]::ReadAllBytes($fileAbs)
+        $fileName = $fileAbs.Replace((Get-Location).Path + "\", "").Replace("\", "/")
+        
+        Write-Host "  [OK] $fileName ($($bytes.Length) байт)" -ForegroundColor Green
         
         $lines += "BEGIN_FILE: $fileName"
         $lines += "# SIZE: $($bytes.Length)"
@@ -105,11 +118,28 @@ else {
         $encoded = Encode-Data $bytes -DoCompress:$Compress
         $lines += [Convert]::ToBase64String($encoded)
         $lines += "END_BASE64"
+        $packedCount++
     }
     $lines += "END_MULTI"
+    
+    Write-Host "Упаковано файлов: $packedCount" -ForegroundColor Cyan
 }
 
 $content = $lines -join "`r`n"
-[System.IO.File]::WriteAllText($OutputFile, $content, [System.Text.Encoding]::UTF8)
 
-Write-Host "Упаковано файлов: $($InputFiles.Count) -> $OutputFile" -ForegroundColor Green
+try {
+    [System.IO.File]::WriteAllText($OutputFile, $content, [System.Text.Encoding]::UTF8)
+    
+    if (Test-Path $OutputFile) {
+        $fileInfo = Get-Item $OutputFile
+        Write-Host "`nУСПЕХ: Файл создан: $OutputFile" -ForegroundColor Green
+        Write-Host "  Размер: $($fileInfo.Length) байт" -ForegroundColor Cyan
+    } else {
+        Write-Host "`nОШИБКА: Файл не был создан по пути: $OutputFile" -ForegroundColor Red
+        exit 1
+    }
+} catch {
+    Write-Host "`nОШИБКА при записи файла: $_" -ForegroundColor Red
+    Write-Host "Путь: $OutputFile" -ForegroundColor Red
+    exit 1
+}

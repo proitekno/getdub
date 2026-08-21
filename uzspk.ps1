@@ -1,31 +1,32 @@
 <#
 .SYNOPSIS
     Распаковывает .zspk пакет (одиночный или мульти-файл).
-.DESCRIPTION
-    Автоматически определяет формат пакета.
-    Поддерживает опциональное сжатие и CRC32.
 .PARAMETER InputFile
     Путь к .zspk файлу.
 .PARAMETER BasePath
     Базовый путь для распаковки (по умолчанию текущая директория).
 .EXAMPLE
     .\uzspk.ps1 -InputFile .\gdubv0-0-49f.zspk
-.EXAMPLE
-    .\uzspk.ps1 -InputFile .\fix.zspk -BasePath E:\src\win\rs\getdub
 #>
 param(
     [Parameter(Mandatory=$true)]
     [string]$InputFile,
     
-    [string]$BasePath = $PSScriptRoot
+    [string]$BasePath = (Get-Location).Path
 )
 
 $ErrorActionPreference = 'Stop'
 
+$InputFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InputFile)
+$BasePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BasePath)
+
 if (-not (Test-Path $InputFile)) {
-    Write-Host "Ошибка: Файл не найден: $InputFile" -ForegroundColor Red
+    Write-Host "ОШИБКА: Файл не найден: $InputFile" -ForegroundColor Red
     exit 1
 }
+
+Write-Host "Входной файл: $InputFile" -ForegroundColor Cyan
+Write-Host "Базовый путь: $BasePath" -ForegroundColor Cyan
 
 function Get-CRC32 {
     param([byte[]]$Bytes)
@@ -58,7 +59,6 @@ function Decode-Data {
 
 $content = Get-Content -Path $InputFile -Raw -Encoding UTF8
 
-# Извлекаем метаданные
 $doCompress = $false
 $doCrc32 = $false
 if ($content -match '(?m)^#\s*COMPRESS:\s*(True|False)\s*$') { $doCompress = ($matches[1] -eq 'True') }
@@ -74,34 +74,37 @@ function Write-FileFromBase64 {
         [bool]$IsCompressed
     )
     
-    $compressedBytes = [Convert]::FromBase64String($Base64Data.Trim())
-    $bytes = Decode-Data $compressedBytes -DoCompress:$IsCompressed
-    
-    # Проверка CRC32
-    if ($doCrc32 -and $ExpectedHash) {
-        $actualHash = Get-CRC32 $bytes
-        if ($actualHash -ne $ExpectedHash) {
-            Write-Host "  ОШИБКА CRC32 для $FileName: ожидалось $ExpectedHash, получено $actualHash" -ForegroundColor Red
-            return $false
+    try {
+        $compressedBytes = [Convert]::FromBase64String($Base64Data.Trim())
+        $bytes = Decode-Data $compressedBytes -DoCompress:$IsCompressed
+        
+        if ($doCrc32 -and $ExpectedHash) {
+            $actualHash = Get-CRC32 $bytes
+            if ($actualHash -ne $ExpectedHash) {
+                Write-Host "  ОШИБКА CRC32 для $FileName: ожидалось $ExpectedHash, получено $actualHash" -ForegroundColor Red
+                return $false
+            }
+            Write-Host "  CRC32 OK: $actualHash" -ForegroundColor DarkGray
         }
-        Write-Host "  CRC32 OK: $actualHash" -ForegroundColor DarkGray
+        
+        $fullPath = Join-Path $BasePath $FileName
+        $outDir = Split-Path $fullPath -Parent
+        if ($outDir -and -not (Test-Path $outDir)) {
+            New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+        }
+        
+        [System.IO.File]::WriteAllBytes($fullPath, $bytes)
+        Write-Host "  [OK] $FileName ($($bytes.Length) байт)" -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Host "  ОШИБКА для $FileName : $_" -ForegroundColor Red
+        return $false
     }
-    
-    $fullPath = Join-Path $BasePath $FileName
-    $outDir = Split-Path $fullPath -Parent
-    if ($outDir -and -not (Test-Path $outDir)) {
-        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-    }
-    
-    [System.IO.File]::WriteAllBytes($fullPath, $bytes)
-    Write-Host "  [OK] $FileName ($($bytes.Length) байт)" -ForegroundColor Green
-    return $true
 }
 
 $extracted = 0
 
 if ($content -match 'BEGIN_MULTI') {
-    # Мульти-пакет
     Write-Host "Распаковка мульти-пакета..." -ForegroundColor Cyan
     
     $fileBlocks = [regex]::Matches($content, '(?s)BEGIN_FILE:\s*(.+?)\r?\n((?:#\s*.+\r?\n)*)BEGIN_BASE64\r?\n(.+?)\r?\nEND_BASE64')
@@ -122,7 +125,6 @@ if ($content -match 'BEGIN_MULTI') {
     }
 }
 else {
-    # Одиночный файл
     $fileName = ""
     if ($content -match '(?m)^#\s*FILE:\s*(.+?)\s*$') {
         $fileName = $matches[1].Trim()
