@@ -1,4 +1,6 @@
-﻿use log::LevelFilter;
+use chrono::Local;
+use log::LevelFilter;
+use std::io::Write;
 
 pub fn init_logger(level: &str, verbose: bool) {
     let filter = if verbose {
@@ -9,7 +11,15 @@ pub fn init_logger(level: &str, verbose: bool) {
 
     env_logger::Builder::new()
         .filter_level(filter)
-        .format_timestamp_secs()
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "[{} {} {}] {}",
+                Local::now().format("%Y-%m-%dT%H:%M:%S"),
+                record.level(),
+                record.target(),
+                record.args()
+            )
+        })
         .init();
 }
-

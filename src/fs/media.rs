@@ -1,4 +1,4 @@
-﻿use log::{debug, warn};
+use log::{debug, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaType { Hdd, Ssd, Vhd, Usb, Unknown }
@@ -10,6 +10,7 @@ const PROPERTY_STANDARD_QUERY: u32 = 0;
 const BUS_TYPE_USB: u32 = 7;
 const BUS_TYPE_VIRTUAL: u32 = 14;
 const BUS_TYPE_FILE_BACKED_VIRTUAL: u32 = 15;
+const DRIVE_REMOVABLE: u32 = 2;
 
 #[repr(C)] struct StoragePropertyQuery { property_id: u32, query_type: u32, additional_parameters: [u8; 1], _pad: [u8; 3] }
 #[repr(C)] struct StorageAdapterDescriptor { version: u32, size: u32, maximum_transfer_length: u32, maximum_physical_pages: u32, alignment_mask: u32, device_uses_down_port: u8, _pad: [u8; 3], bus_type: u32 }
@@ -18,7 +19,8 @@ const BUS_TYPE_FILE_BACKED_VIRTUAL: u32 = 15;
 #[cfg(windows)]
 pub fn detect_media_type(root: &str) -> MediaType {
     use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, INVALID_HANDLE_VALUE};
-    use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
+    use windows::Win32::Storage::FileSystem::{CreateFileW, GetDriveTypeW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
+    use windows::Win32::System::IO::DeviceIoControl;
     use windows::core::HSTRING;
 
     let volume_path = get_volume_path(root);
@@ -34,10 +36,32 @@ pub fn detect_media_type(root: &str) -> MediaType {
     let _ = unsafe { CloseHandle(handle) };
 
     debug!("detect_media_type for {}: bus_type={:?}, seek_penalty={:?}", volume_path, bus_type, seek_penalty);
+
     match bus_type {
         Some(BUS_TYPE_USB) => MediaType::Usb,
         Some(BUS_TYPE_VIRTUAL) | Some(BUS_TYPE_FILE_BACKED_VIRTUAL) => MediaType::Vhd,
-        _ => match seek_penalty { Some(true) => MediaType::Hdd, Some(false) => MediaType::Ssd, None => MediaType::Unknown },
+        Some(_) => {
+            let drive_type = unsafe { GetDriveTypeW(&HSTRING::from(root)) };
+            if drive_type == DRIVE_REMOVABLE {
+                debug!("Fallback: DRIVE_REMOVABLE detected, assuming USB");
+                MediaType::Usb
+            } else {
+                match seek_penalty {
+                    Some(true) => MediaType::Hdd,
+                    Some(false) => MediaType::Ssd,
+                    None => MediaType::Unknown,
+                }
+            }
+        }
+        None => {
+            let drive_type = unsafe { GetDriveTypeW(&HSTRING::from(root)) };
+            if drive_type == DRIVE_REMOVABLE {
+                debug!("Fallback: DRIVE_REMOVABLE detected, assuming USB");
+                MediaType::Usb
+            } else {
+                MediaType::Unknown
+            }
+        }
     }
 }
 
@@ -92,4 +116,3 @@ fn query_seek_penalty(handle: windows::Win32::Foundation::HANDLE) -> Option<bool
         Err(e) => { debug!("query_seek_penalty failed: {:?}", e); None }
     }
 }
-
